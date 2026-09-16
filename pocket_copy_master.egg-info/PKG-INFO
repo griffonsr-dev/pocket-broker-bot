@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: pocket-copy-master
+Version: 0.1.0
+Summary: Master-authorized copy-trading service with a broker adapter boundary
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.30
+Requires-Dist: pydantic<3,>=2.8
+Requires-Dist: python-dotenv<2,>=1.0
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8.3; extra == "test"
+Requires-Dist: pytest-asyncio<1,>=0.24; extra == "test"
+Requires-Dist: httpx<1,>=0.27; extra == "test"
+Provides-Extra: live
+Requires-Dist: pocket-option<1,>=0.1; extra == "live"

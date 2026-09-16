@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+app/__init__.py
+app/api.py
+app/broker.py
+app/models.py
+app/service.py
+pocket_copy_master.egg-info/PKG-INFO
+pocket_copy_master.egg-info/SOURCES.txt
+pocket_copy_master.egg-info/dependency_links.txt
+pocket_copy_master.egg-info/requires.txt
+pocket_copy_master.egg-info/top_level.txt
+tests/test_api.py
+tests/test_copy_engine.py
