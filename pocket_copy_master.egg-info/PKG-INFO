@@ -7,9 +7,10 @@ Requires-Dist: fastapi<1,>=0.115
 Requires-Dist: uvicorn[standard]<1,>=0.30
 Requires-Dist: pydantic<3,>=2.8
 Requires-Dist: python-dotenv<2,>=1.0
+Requires-Dist: aiohttp<4,>=3.13.1
 Provides-Extra: test
 Requires-Dist: pytest<9,>=8.3; extra == "test"
 Requires-Dist: pytest-asyncio<1,>=0.24; extra == "test"
 Requires-Dist: httpx<1,>=0.27; extra == "test"
 Provides-Extra: live
-Requires-Dist: pocket-option<1,>=0.1; extra == "live"
+Requires-Dist: pocket-option==0.4.0; extra == "live"

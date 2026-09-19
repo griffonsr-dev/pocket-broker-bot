@@ -2,9 +2,10 @@ fastapi<1,>=0.115
 uvicorn[standard]<1,>=0.30
 pydantic<3,>=2.8
 python-dotenv<2,>=1.0
+aiohttp<4,>=3.13.1
 
 [live]
-pocket-option<1,>=0.1
+pocket-option==0.4.0
 
 [test]
 pytest<9,>=8.3

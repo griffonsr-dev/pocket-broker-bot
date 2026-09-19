@@ -22,6 +22,12 @@ Master positions are detected immediately through broker events, with a configur
 
 The API is available at `http://127.0.0.1:8000/docs`.
 
+## Railway deployment
+
+Railway's Nixpacks Python builder installs `requirements.txt` when it is present, so deployment-only dependencies must be listed there directly. The unofficial SDK package used by this app is `pocket-option`, not `pocket-option-package`.
+
+The included `runtime.txt` selects Python 3.13 for Railway. If Railway reports a Python runtime resolution issue, set the `NIXPACKS_PYTHON_VERSION` service variable to `3.13`.
+
 ## Logs
 
 Run `python main.py` with `LOG_LEVEL=INFO` to see account authorization, balance updates, master detection, child order acceptance or failure, broker position IDs, open times, copy latency, and final profit/settlement results. Session credentials and API tokens are never written to logs.
