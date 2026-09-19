@@ -83,9 +83,6 @@ class CopyTradingService:
         return await self._open(self._master, position)
 
     async def start_master_position_monitor(self) -> None:
-        await asyncio.gather(
-            *(self.connect_account(child.id) for child in self._children.values() if child.enabled)
-        )
         session = self._sessions.get(self._master.id) or await self.connect_account(
             self._master.id
         )
@@ -112,6 +109,22 @@ class CopyTradingService:
             return None
 
         await self._broker.watch_open_positions(session, handle_master_position)
+        await self._warm_child_sessions()
+
+    async def _warm_child_sessions(self) -> None:
+        async def connect_child(child: Account) -> None:
+            try:
+                await self.connect_account(child.id)
+            except Exception:
+                logger.warning(
+                    "Child account preconnect failed name=%s; will retry on copy",
+                    child.name,
+                    exc_info=True,
+                )
+
+        await asyncio.gather(
+            *(connect_child(child) for child in self._children.values() if child.enabled)
+        )
 
     async def close(self) -> None:
         await self._broker.close()

@@ -35,6 +35,29 @@ async def test_master_event_retries_after_child_copy_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_child_preconnect_failure_does_not_block_master_monitor() -> None:
+    class ChildConnectFailingBroker(RecordingBroker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.connected_accounts: list[str] = []
+
+        async def connect(self, account):
+            self.connected_accounts.append(account.name)
+            if not account.is_master:
+                raise BrokerNotConfiguredError("child authorization timed out")
+            return await super().connect(account)
+
+    broker = ChildConnectFailingBroker()
+    service = CopyTradingService(broker, Account(name="master", is_master=True))
+    service.add_child(Account(name="child"))
+
+    await service.start_master_position_monitor()
+
+    assert broker.connected_accounts == ["master", "child"]
+    assert broker.callback is not None
+
+
+@pytest.mark.asyncio
 async def test_partial_child_failure_keeps_successful_children_opening() -> None:
     class FailingChildBroker(RecordingBroker):
         def __init__(self) -> None:

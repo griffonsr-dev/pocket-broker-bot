@@ -20,6 +20,7 @@ if not application_logger.handlers:
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
     application_logger.addHandler(application_handler)
+application_logger.propagate = False
 
 from .broker import BrokerAdapter, BrokerNotConfiguredError, PocketOptionSdkAdapter
 from .models import Account, ChildAccountCreate, OpenPosition, PositionOpenRequest
@@ -93,7 +94,7 @@ async def start_master_position_monitor() -> None:
             logger.info("Master position monitor started")
         except BrokerNotConfiguredError as exc:
             logger.warning(
-                "Live broker not configured; continuing in degraded mode: %s",
+                "Broker startup failed; continuing in degraded mode: %s",
                 exc,
             )
 
