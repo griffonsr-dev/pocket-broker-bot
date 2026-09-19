@@ -21,7 +21,7 @@ if not application_logger.handlers:
     )
     application_logger.addHandler(application_handler)
 
-from .broker import BrokerAdapter, PocketOptionSdkAdapter
+from .broker import BrokerAdapter, BrokerNotConfiguredError, PocketOptionSdkAdapter
 from .models import Account, ChildAccountCreate, OpenPosition, PositionOpenRequest
 from .service import CopyTradingService
 
@@ -88,8 +88,14 @@ async def start_master_position_monitor() -> None:
             logger.info("Child account loaded name=%s", child_name)
     logger.info("Starting broker mode=%s environment=%s", broker_mode, environment)
     if broker_mode == "unofficial_sdk":
-        await service.start_master_position_monitor()
-        logger.info("Master position monitor started")
+        try:
+            await service.start_master_position_monitor()
+            logger.info("Master position monitor started")
+        except BrokerNotConfiguredError as exc:
+            logger.warning(
+                "Live broker not configured; continuing in degraded mode: %s",
+                exc,
+            )
 
 
 @asynccontextmanager
@@ -141,9 +147,15 @@ async def open_master_position(
     _token: str = Depends(require_master_token),
 ) -> object:
     position = OpenPosition(**payload.model_dump())
-    if broker_mode == "unofficial_sdk":
-        return await service.open_master_only(position)
-    return await service.open_from_master(position)
+    try:
+        if broker_mode == "unofficial_sdk":
+            return await service.open_master_only(position)
+        return await service.open_from_master(position)
+    except BrokerNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Live broker is not configured; install the optional SDK or switch to demo mode",
+        ) from exc
 
 
 @app.post("/accounts/{account_id}/connect")
@@ -157,6 +169,11 @@ async def connect_account(
         return await service.connect_account(UUID(account_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Unknown account") from exc
+    except BrokerNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Live broker is not configured; install the optional SDK or switch to demo mode",
+        ) from exc
 
 
 @app.get("/accounts/{account_id}/assets")
@@ -170,6 +187,11 @@ async def list_assets(
         return await service.list_assets(UUID(account_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Unknown account") from exc
+    except BrokerNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Live broker is not configured; install the optional SDK or switch to demo mode",
+        ) from exc
 
 
 @app.get("/accounts/{account_id}/positions/{broker_position_id}/result")
@@ -184,6 +206,11 @@ async def position_result(
         return await service.get_position_result(UUID(account_id), broker_position_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Unknown account") from exc
+    except BrokerNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Live broker is not configured; install the optional SDK or switch to demo mode",
+        ) from exc
 
 
 @app.post("/accounts/{account_id}/positions", status_code=status.HTTP_403_FORBIDDEN)
