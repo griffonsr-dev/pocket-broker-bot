@@ -143,6 +143,10 @@ class PocketOptionSdkAdapter:
         self._pending_requests: dict[tuple[str, UUID], int] = {}
         self._http_sessions: dict[str, aiohttp.ClientSession] = {}
         self._account_names: dict[str, str] = {}
+        self._auth_timeout_seconds = max(
+            1.0,
+            float(os.getenv("BROKER_AUTH_TIMEOUT_SECONDS", "10")),
+        )
         self._forwarded_master_deals: set[str] = set()
         self._processing_master_deals: set[str] = set()
         self._watch_tasks: set[asyncio.Task[None]] = set()
@@ -184,7 +188,15 @@ class PocketOptionSdkAdapter:
         region = regions.DEMO if authorization.is_demo else regions.REAL
         try:
             await client.connect(region)
-            await client.authorized_event.wait()
+            await asyncio.wait_for(
+                client.authorized_event.wait(),
+                timeout=self._auth_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            await http_session.close()
+            raise BrokerNotConfiguredError(
+                "Broker authorization timed out; check credentials and network connectivity"
+            ) from exc
         except Exception:
             await http_session.close()
             raise
@@ -367,12 +379,17 @@ class PocketOptionSdkAdapter:
                 duration_seconds,
             )
             try:
+                correlation_id = UUID(str(deal_id))
+            except (ValueError, TypeError, AttributeError):
+                correlation_id = uuid4()
+            try:
                 await callback(
                     OpenPosition(
                         asset=asset,
                         direction=direction,
                         amount=deal.amount,
                         duration_seconds=duration_seconds,
+                        correlation_id=correlation_id,
                     )
                 )
             except Exception:
@@ -436,13 +453,23 @@ class PocketOptionSdkAdapter:
         self._pending_requests.clear()
 
     async def _poll_open_deals(self, client: Any) -> None:
+        consecutive_failures = 0
         while True:
             try:
                 await client.emit.deals_update_opened()
+                consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                broker_logger.exception("Failed to poll master open positions")
+            except Exception as exc:
+                consecutive_failures += 1
+                broker_logger.exception(
+                    "Failed to poll master open positions attempt=%s",
+                    consecutive_failures,
+                )
+                if consecutive_failures >= 3:
+                    raise RuntimeError(
+                        "Master position monitor lost broker connection; reconnect required"
+                    ) from exc
             await asyncio.sleep(self._poll_interval_seconds)
 
     def _get_client(self, session: BrokerSession) -> Any:

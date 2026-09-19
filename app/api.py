@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 project_root = Path(__file__).resolve().parent.parent
 requested_environment = os.getenv("APP_ENV")
@@ -43,6 +43,17 @@ else:
     raise RuntimeError(f"Unsupported BROKER_MODE: {broker_mode}")
 service = CopyTradingService(broker, master)
 master_api_token = os.getenv("MASTER_API_TOKEN", "local-master-token")
+
+
+def require_master_token(x_master_token: str | None = Header(default=None)) -> str:
+    if x_master_token is None:
+        raise HTTPException(status_code=401, detail="Valid master token required")
+    try:
+        if not hmac.compare_digest(x_master_token, master_api_token):
+            raise HTTPException(status_code=401, detail="Valid master token required")
+    except TypeError as exc:
+        raise HTTPException(status_code=401, detail="Valid master token required") from exc
+    return x_master_token
 
 
 async def start_master_position_monitor() -> None:
@@ -99,17 +110,23 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/accounts", response_model=list[Account])
-async def accounts() -> list[Account]:
+async def accounts(_token: str = Depends(require_master_token)) -> list[Account]:
     return service.list_accounts()
 
 
 @app.post("/accounts/children", response_model=Account, status_code=status.HTTP_201_CREATED)
-async def add_child(payload: ChildAccountCreate) -> Account:
+async def add_child(
+    payload: ChildAccountCreate,
+    _token: str = Depends(require_master_token),
+) -> Account:
     return service.add_child(Account(**payload.model_dump()))
 
 
 @app.delete("/accounts/children/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_child(account_id: str) -> None:
+async def remove_child(
+    account_id: str,
+    _token: str = Depends(require_master_token),
+) -> None:
     from uuid import UUID
 
     try:
@@ -121,10 +138,8 @@ async def remove_child(account_id: str) -> None:
 @app.post("/master/positions")
 async def open_master_position(
     payload: PositionOpenRequest,
-    x_master_token: str | None = Header(default=None),
+    _token: str = Depends(require_master_token),
 ) -> object:
-    if x_master_token is None or not hmac.compare_digest(x_master_token, master_api_token):
-        raise HTTPException(status_code=401, detail="Valid master token required")
     position = OpenPosition(**payload.model_dump())
     if broker_mode == "unofficial_sdk":
         return await service.open_master_only(position)
@@ -134,10 +149,8 @@ async def open_master_position(
 @app.post("/accounts/{account_id}/connect")
 async def connect_account(
     account_id: str,
-    x_master_token: str | None = Header(default=None),
+    _token: str = Depends(require_master_token),
 ) -> object:
-    if x_master_token is None or not hmac.compare_digest(x_master_token, master_api_token):
-        raise HTTPException(status_code=401, detail="Valid master token required")
     from uuid import UUID
 
     try:
@@ -149,10 +162,8 @@ async def connect_account(
 @app.get("/accounts/{account_id}/assets")
 async def list_assets(
     account_id: str,
-    x_master_token: str | None = Header(default=None),
+    _token: str = Depends(require_master_token),
 ) -> object:
-    if x_master_token is None or not hmac.compare_digest(x_master_token, master_api_token):
-        raise HTTPException(status_code=401, detail="Valid master token required")
     from uuid import UUID
 
     try:
@@ -165,10 +176,8 @@ async def list_assets(
 async def position_result(
     account_id: str,
     broker_position_id: str,
-    x_master_token: str | None = Header(default=None),
+    _token: str = Depends(require_master_token),
 ) -> object:
-    if x_master_token is None or not hmac.compare_digest(x_master_token, master_api_token):
-        raise HTTPException(status_code=401, detail="Valid master token required")
     from uuid import UUID
 
     try:

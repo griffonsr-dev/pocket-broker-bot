@@ -27,6 +27,7 @@ class CopyTradingService:
         self._master = master
         self._children: dict[UUID, Account] = {}
         self._sessions: dict[UUID, BrokerSession] = {}
+        self._processed_master_positions: set[UUID] = set()
 
     @property
     def master(self) -> Account:
@@ -71,7 +72,7 @@ class CopyTradingService:
         """Open the master order and fan out identical child orders concurrently."""
         master_result, child_results = await asyncio.gather(
             self._open(self._master, position),
-            self._open_children(position),
+            self._open_children(position, raise_on_error=False),
         )
         return CopyResult(
             master_position=master_result,
@@ -90,15 +91,24 @@ class CopyTradingService:
         )
 
         async def handle_master_position(position: OpenPosition) -> None:
+            if position.correlation_id in self._processed_master_positions:
+                logger.info(
+                    "Skipping duplicate master position correlation_id=%s asset=%s",
+                    position.correlation_id,
+                    position.asset,
+                )
+                return None
             try:
                 await self.copy_to_children(position)
             except Exception:
+                self._processed_master_positions.discard(position.correlation_id)
                 logger.exception(
                     "Failed to copy master position asset=%s direction=%s",
                     position.asset,
                     position.direction.value,
                 )
                 raise
+            self._processed_master_positions.add(position.correlation_id)
             return None
 
         await self._broker.watch_open_positions(session, handle_master_position)
@@ -108,7 +118,7 @@ class CopyTradingService:
 
     async def copy_to_children(self, position: OpenPosition) -> list[ExecutionResult]:
         started_at = datetime.now(timezone.utc)
-        results = await self._open_children(position)
+        results = await self._open_children(position, raise_on_error=True)
         logger.info(
             "Master position copied asset=%s direction=%s amount=%s duration_seconds=%s children=%s latency_ms=%s",
             position.asset,
@@ -120,14 +130,36 @@ class CopyTradingService:
         )
         return results
 
-    async def _open_children(self, position: OpenPosition) -> list[ExecutionResult]:
-        return await asyncio.gather(
-            *(
-                self._open(child, position)
-                for child in self._children.values()
-                if child.enabled
-            )
+    async def _open_children(
+        self, position: OpenPosition, *, raise_on_error: bool = True
+    ) -> list[ExecutionResult]:
+        async def open_one(child: Account) -> tuple[ExecutionResult | None, Exception | None]:
+            try:
+                return await self._open(child, position), None
+            except Exception as exc:
+                logger.warning(
+                    "Child order failed account=%s asset=%s direction=%s amount=%s",
+                    child.name,
+                    position.asset,
+                    position.direction.value,
+                    position.amount,
+                )
+                return None, exc
+
+        outcomes = await asyncio.gather(
+            *(open_one(child) for child in self._children.values() if child.enabled)
         )
+        results: list[ExecutionResult] = []
+        first_error: Exception | None = None
+        for result, exc in outcomes:
+            if result is not None:
+                results.append(result)
+            elif exc is not None and first_error is None:
+                first_error = exc
+
+        if raise_on_error and first_error is not None:
+            raise first_error
+        return results
 
     async def _open(self, account: Account, position: OpenPosition) -> ExecutionResult:
         session = self._sessions.get(account.id)

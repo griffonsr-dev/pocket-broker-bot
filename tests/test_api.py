@@ -38,7 +38,11 @@ def test_child_position_endpoint_is_forbidden() -> None:
 
 
 def test_master_position_opens_master_in_live_mode() -> None:
-    child = client.post("/accounts/children", json={"name": "api-child"})
+    child = client.post(
+        "/accounts/children",
+        json={"name": "api-child"},
+        headers={"X-Master-Token": master_api_token},
+    )
     assert child.status_code == 201
 
     response = client.post(

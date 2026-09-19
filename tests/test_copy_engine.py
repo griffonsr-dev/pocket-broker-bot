@@ -35,6 +35,55 @@ async def test_master_event_retries_after_child_copy_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_partial_child_failure_keeps_successful_children_opening() -> None:
+    class FailingChildBroker(RecordingBroker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_on_account = None
+
+        async def open_position(
+            self,
+            session,
+            *,
+            asset,
+            direction,
+            amount,
+            duration_seconds,
+            correlation_id,
+        ):
+            if self.fail_on_account is not None and session.account_id == self.fail_on_account:
+                raise RuntimeError("temporary child order failure")
+            return await super().open_position(
+                session,
+                asset=asset,
+                direction=direction,
+                amount=amount,
+                duration_seconds=duration_seconds,
+                correlation_id=correlation_id,
+            )
+
+    broker = FailingChildBroker()
+    service = CopyTradingService(broker, Account(name="master", is_master=True))
+    first = service.add_child(Account(name="first"))
+    second = service.add_child(Account(name="second"))
+    broker.fail_on_account = first.id
+
+    position = OpenPosition(
+        asset="EURUSD",
+        direction=Direction.CALL,
+        amount=Decimal("10"),
+        duration_seconds=60,
+    )
+
+    result = await service.open_from_master(position)
+
+    assert len(result.child_positions) == 1
+    assert result.child_positions[0].account_id == second.id
+    assert len(broker.positions) == 2
+    assert {item["account_id"] for item in broker.positions} == {service.master.id, second.id}
+
+
+@pytest.mark.asyncio
 async def test_master_position_is_copied_to_enabled_children() -> None:
     broker = RecordingBroker()
     service = CopyTradingService(broker, Account(name="master", is_master=True))
