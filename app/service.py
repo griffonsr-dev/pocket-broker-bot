@@ -1,205 +1,70 @@
 import asyncio
-from collections.abc import Iterable
-from datetime import datetime, timezone
 import logging
 from uuid import UUID
 
-from .broker import BrokerAdapter
-from .models import (
-    Account,
-    AssetInfo,
-    BrokerSession,
-    CopyResult,
-    ExecutionResult,
-    OpenPosition,
-    PositionResult,
-)
-
+from .broker import Broker
+from .models import Account, BrokerSession, Execution, Trade
 
 logger = logging.getLogger(__name__)
 
 
-class CopyTradingService:
-    def __init__(self, broker: BrokerAdapter, master: Account) -> None:
+class MirrorService:
+    def __init__(self, broker: Broker, master: Account, children: list[Account]) -> None:
         if not master.is_master:
-            raise ValueError("The controlling account must be marked as master")
-        self._broker = broker
-        self._master = master
-        self._children: dict[UUID, Account] = {}
-        self._sessions: dict[UUID, BrokerSession] = {}
-        self._processed_master_positions: set[UUID] = set()
+            raise ValueError("master account must be marked as master")
+        if any(child.is_master for child in children):
+            raise ValueError("child accounts cannot be masters")
+        self.broker = broker
+        self.master = master
+        self.children = {
+            child.id: child for child in children if child.enabled
+        }
+        self.sessions: dict[UUID, BrokerSession] = {}
+        self._inflight: set[UUID] = set()
 
-    @property
-    def master(self) -> Account:
-        return self._master
-
-    def list_accounts(self) -> list[Account]:
-        return [self._master, *self._children.values()]
-
-    def add_child(self, child: Account) -> Account:
-        if child.is_master:
-            raise ValueError("A child account cannot be marked as master")
-        self._children[child.id] = child
-        logger.info("Child account added name=%s enabled=%s", child.name, child.enabled)
-        return child
-
-    async def connect_account(self, account_id: UUID) -> BrokerSession:
-        account = next(
-            (candidate for candidate in self.list_accounts() if candidate.id == account_id),
-            None,
+    async def start(self) -> None:
+        accounts = [self.master, *self.children.values()]
+        await asyncio.gather(*(self._connect(account) for account in accounts))
+        await self.broker.watch_master(
+            self.sessions[self.master.id], self.mirror_trade
         )
-        if account is None:
-            raise ValueError("Unknown account")
-        session = await self._broker.connect(account)
-        self._sessions[account.id] = session
-        logger.info("Account connected name=%s master=%s", account.name, account.is_master)
+
+    async def _connect(self, account: Account) -> BrokerSession:
+        session = await self.broker.connect(account)
+        self.sessions[account.id] = session
         return session
 
-    async def list_assets(self, account_id: UUID) -> list[AssetInfo]:
-        session = self._sessions.get(account_id) or await self.connect_account(account_id)
-        return await self._broker.list_assets(session)
-
-    async def get_position_result(
-        self, account_id: UUID, broker_position_id: str
-    ) -> PositionResult:
-        session = self._sessions.get(account_id) or await self.connect_account(account_id)
-        return await self._broker.get_position_result(session, broker_position_id)
-
-    def remove_child(self, account_id: UUID) -> None:
-        self._children.pop(account_id, None)
-
-    async def open_from_master(self, position: OpenPosition) -> CopyResult:
-        """Open the master order and fan out identical child orders concurrently."""
-        master_result, child_results = await asyncio.gather(
-            self._open(self._master, position),
-            self._open_children(position, raise_on_error=False),
-        )
-        return CopyResult(
-            master_position=master_result,
-            child_positions=child_results,
-        )
-
-    async def open_master_only(self, position: OpenPosition) -> ExecutionResult:
-        return await self._open(self._master, position)
-
-    async def start_master_position_monitor(self) -> None:
-        session = self._sessions.get(self._master.id) or await self.connect_account(
-            self._master.id
-        )
-
-        async def handle_master_position(position: OpenPosition) -> None:
-            if position.correlation_id in self._processed_master_positions:
-                logger.info(
-                    "Skipping duplicate master position correlation_id=%s asset=%s",
-                    position.correlation_id,
-                    position.asset,
+    async def mirror_trade(self, trade: Trade) -> list[Execution]:
+        if trade.correlation_id in self._inflight:
+            return []
+        self._inflight.add(trade.correlation_id)
+        try:
+            outcomes = await asyncio.gather(
+                *(
+                    self.broker.open(self.sessions[child.id], trade)
+                    for child in self.children.values()
+                ),
+                return_exceptions=True,
+            )
+            executions = [
+                result for result in outcomes if isinstance(result, Execution)
+            ]
+            failures = [result for result in outcomes if isinstance(result, Exception)]
+            if failures:
+                logger.error(
+                    "child copy failures=%s correlation_id=%s",
+                    len(failures),
+                    trade.correlation_id,
                 )
-                return None
-            try:
-                await self.copy_to_children(position)
-            except Exception:
-                self._processed_master_positions.discard(position.correlation_id)
-                logger.exception(
-                    "Failed to copy master position asset=%s direction=%s",
-                    position.asset,
-                    position.direction.value,
-                )
-                raise
-            self._processed_master_positions.add(position.correlation_id)
-            return None
+            return executions
+        finally:
+            self._inflight.discard(trade.correlation_id)
 
-        await self._broker.watch_open_positions(session, handle_master_position)
-        await self._warm_child_sessions()
+    async def open_master(self, trade: Trade) -> Execution:
+        return await self.broker.open(self.sessions[self.master.id], trade)
 
-    async def _warm_child_sessions(self) -> None:
-        async def connect_child(child: Account) -> None:
-            try:
-                await self.connect_account(child.id)
-            except Exception:
-                logger.warning(
-                    "Child account preconnect failed name=%s; will retry on copy",
-                    child.name,
-                    exc_info=True,
-                )
-
-        await asyncio.gather(
-            *(connect_child(child) for child in self._children.values() if child.enabled)
-        )
+    def accounts(self) -> list[Account]:
+        return [self.master, *self.children.values()]
 
     async def close(self) -> None:
-        await self._broker.close()
-
-    async def copy_to_children(self, position: OpenPosition) -> list[ExecutionResult]:
-        started_at = datetime.now(timezone.utc)
-        results = await self._open_children(position, raise_on_error=True)
-        logger.info(
-            "Master position copied asset=%s direction=%s amount=%s duration_seconds=%s children=%s latency_ms=%s",
-            position.asset,
-            position.direction.value,
-            position.amount,
-            position.duration_seconds,
-            len(results),
-            round((datetime.now(timezone.utc) - started_at).total_seconds() * 1000),
-        )
-        return results
-
-    async def _open_children(
-        self, position: OpenPosition, *, raise_on_error: bool = True
-    ) -> list[ExecutionResult]:
-        async def open_one(child: Account) -> tuple[ExecutionResult | None, Exception | None]:
-            try:
-                return await self._open(child, position), None
-            except Exception as exc:
-                logger.warning(
-                    "Child order failed account=%s asset=%s direction=%s amount=%s",
-                    child.name,
-                    position.asset,
-                    position.direction.value,
-                    position.amount,
-                )
-                return None, exc
-
-        outcomes = await asyncio.gather(
-            *(open_one(child) for child in self._children.values() if child.enabled)
-        )
-        results: list[ExecutionResult] = []
-        first_error: Exception | None = None
-        for result, exc in outcomes:
-            if result is not None:
-                results.append(result)
-            elif exc is not None and first_error is None:
-                first_error = exc
-
-        if raise_on_error and first_error is not None:
-            raise first_error
-        return results
-
-    async def _open(self, account: Account, position: OpenPosition) -> ExecutionResult:
-        session = self._sessions.get(account.id)
-        if session is None:
-            session = await self.connect_account(account.id)
-        try:
-            result = await self._broker.open_position(
-                session,
-                asset=position.asset,
-                direction=position.direction.value,
-                amount=position.amount,
-                duration_seconds=position.duration_seconds,
-                correlation_id=position.correlation_id,
-            )
-        except Exception:
-            logger.exception(
-                "Position open failed account=%s asset=%s direction=%s amount=%s",
-                account.name,
-                position.asset,
-                position.direction.value,
-                position.amount,
-            )
-            raise
-        logger.info(
-            "Position accepted account=%s broker_position_id=%s accepted_at=%s",
-            account.name,
-            result.broker_position_id,
-            result.accepted_at.isoformat(),
-        )
-        return result
+        await self.broker.close()

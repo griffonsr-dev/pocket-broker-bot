@@ -1,1 +1,1 @@
-"""Master-authorized copy-trading service."""
+"""Low-latency master-to-child trade mirroring."""

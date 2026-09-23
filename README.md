@@ -1,77 +1,41 @@
-# Pocket Copy Master
+# Railway Trade Mirror
 
-A small master-authorized copy-trading service. The master opens a position once; every enabled child receives the same asset, direction, amount, duration, and correlation ID concurrently.
+This service mirrors master trades to enabled child accounts using persistent broker sessions and concurrent order submission.
 
-## Important integration boundary
+The latency path is intentionally small: the master broker event is received, converted to a `Trade`, and all child `open_deal` calls are started together with `asyncio.gather`. Sessions are connected before the listener is registered, DNS is cached, HTTP connections are kept alive, and there is no polling loop, database round trip, queue, or intentional sleep. Literal zero latency is impossible because broker and network execution time still applies.
 
-This repository uses the opt-in unofficial Pocket Option SDK adapter. It does not include a claim of zero-latency execution, and actual broker/network scheduling can never guarantee literally zero delay.
+## Environment files and Railway variables
 
-## Run locally
+`.env.demo` and `.env.live` are included as local templates. Replace their placeholder values locally, and never commit real broker sessions. Select one with `APP_ENV=demo` or `APP_ENV=live`. Railway should use the same variables in its service Variables settings instead of uploading these files.
+
+```text
+MASTER_API_TOKEN=<long-random-value>
+MASTER_CREDENTIAL_REF=PO_MASTER_CREDENTIALS
+PO_MASTER_CREDENTIALS={"session":"...","uid":123,"is_demo":true}
+CHILD_ACCOUNTS_JSON=[{"name":"child-1","credential_ref":"PO_CHILD_1_CREDENTIALS"}]
+PO_CHILD_1_CREDENTIALS={"session":"...","uid":456,"is_demo":true}
+```
+
+Add more children to `CHILD_ACCOUNTS_JSON`. Use demo credentials first. Credentials are read from environment variables and never logged.
+
+## Start locally
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python -m pytest
+$env:MASTER_API_TOKEN = "local-token"
 python main.py
 ```
 
-The application uses `.env` to select an environment. `APP_ENV=demo` loads `.env.demo`; `APP_ENV=live` loads `.env.live`. Both environments use the unofficial SDK; the demo file must contain demo sessions and the live file must contain live sessions. Keep both environment files local and rotate sessions after testing.
+Health: `GET /health`.
 
-Master positions are detected immediately through broker events, with a configurable polling fallback. `POSITION_POLL_INTERVAL_SECONDS` defaults to `0.5`; values below `0.25` are clamped to avoid unnecessary broker pressure. Child orders are sent concurrently, but each remains broker-confirmed before the copy is marked successful.
-
-The API is available at `http://127.0.0.1:8000/docs`.
-
-## Railway deployment
-
-Railway's Nixpacks Python builder installs `requirements.txt` when it is present, so deployment-only dependencies must be listed there directly. The unofficial SDK package used by this app is `pocket-option`, not `pocket-option-package`.
-
-The included `runtime.txt` selects Python 3.13 for Railway. If Railway reports a Python runtime resolution issue, set the `NIXPACKS_PYTHON_VERSION` service variable to `3.13`.
-
-## Logs
-
-Run `python main.py` with `LOG_LEVEL=INFO` to see account authorization, balance updates, master detection, child order acceptance or failure, broker position IDs, open times, copy latency, and final profit/settlement results. Session credentials and API tokens are never written to logs.
-
-## API
-
-- `GET /health` checks the service.
-- `GET /accounts` lists the master and children.
-- In `unofficial_sdk` mode, set `MASTER_BROKER_ACCOUNT_ID` and `MASTER_CREDENTIAL_REF` for the master account before starting the service.
-- `POST /accounts/children` adds a child. Store only a broker account ID and a reference to a secret-vault entry, for example:
+Open a master trade with `POST /master/trades` and the `X-Master-Token` header:
 
 ```json
-{
-  "name": "child-1",
-  "broker_account_id": "broker-child-1",
-  "credential_ref": "vault/pocket/child-1"
-}
+{"asset":"EURUSD","direction":"call","amount":"10","duration_seconds":60}
 ```
 
-- `DELETE /accounts/children/{id}` removes a child.
-- `POST /accounts/{id}/connect` creates or restores that broker session.
-- `GET /accounts/{id}/assets` returns supported assets and durations.
-- `GET /accounts/{id}/positions/{broker_position_id}/result` returns the current or final position result.
-- `POST /master/positions` opens and copies a position. Send the configured `X-Master-Token` header. The local default is `local-master-token`; set `MASTER_API_TOKEN` before any shared or live deployment. Example:
+The master endpoint opens the master trade. The broker's open-trade event then mirrors it to the children. Direct child trade requests are rejected.
 
-```json
-{
-  "asset": "EURUSD",
-  "direction": "call",
-  "amount": "10",
-  "duration_seconds": 60
-}
-```
+## Important limitation
 
-- `POST /accounts/{id}/positions` always returns `403`; child accounts cannot initiate positions.
-
-## Production requirements
-
-Before connecting real accounts, add authentication, encrypted credential storage, idempotency and retry policy, broker acknowledgement/reconciliation, audit logs, rate-limit handling, risk limits, and a kill switch. Test with paper/demo accounts first and verify the broker's terms and supported API.
-
-The methods to implement for a permitted live connector are `connect`, `list_assets`, `open_position`, and `get_position_result` on `PocketOptionAdapter` in `app/broker.py`. The adapter currently fails closed with `BrokerNotConfiguredError`; this is intentional because the verified Pocket Option pages do not provide a public developer contract for these operations. The adapter must use a provider-documented API and resolve `credential_ref` through a secret manager; do not put passwords or session tokens in `Account` or source files.
-
-## Unofficial SDK adapter
-
-The repository also includes an opt-in `PocketOptionSdkAdapter` based on the public but unofficial `pocket-option` SDK. Install it with `pip install -e ".[live]"` only after reviewing and pinning the dependency. Set each account's `credential_ref` to an environment variable or secret-manager key containing JSON with `session`, `uid`, `is_demo`, and optional `platform`. The adapter creates one client per account and maps `open_deal` and `check_deal_result` into this service.
-
-Use demo accounts first. Browser SSIDs are session credentials: rotate them after testing, never commit them, and never send them through chat.
+`pocket-option` is an unofficial SDK. Use it only where permitted. A provider-supported API, a Railway region close to the broker, and a colocated execution service are required for stronger latency guarantees.

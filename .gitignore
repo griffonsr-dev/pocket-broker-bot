@@ -1,7 +1,8 @@
+.env
+.env.demo
+.env.live
 .venv/
 __pycache__/
 .pytest_cache/
-*.py[cod]
-.env
-.env.*
-!.env.example
+.mypy_cache/
+*.egg-info/

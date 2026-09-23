@@ -3,9 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pocket-copy-master"
-version = "0.1.0"
-description = "Master-authorized copy-trading service with a broker adapter boundary"
+name = "railway-trade-mirror"
+version = "1.0.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1",
@@ -13,15 +12,8 @@ dependencies = [
     "pydantic>=2.8,<3",
     "python-dotenv>=1.0,<2",
     "aiohttp>=3.13.1,<4",
+    "pocket-option==0.4.0",
 ]
-
-[project.optional-dependencies]
-test = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1", "httpx>=0.27,<1"]
-live = ["pocket-option==0.4.0"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

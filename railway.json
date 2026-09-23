@@ -2,10 +2,10 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "/opt/venv/bin/python -m pip install --upgrade pip && /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.txt && /opt/venv/bin/python -c \"import pocket_option; print('pocket_option installed at', pocket_option.__file__)\""
+    "buildCommand": "pip install --no-cache-dir -r requirements.txt"
   },
   "deploy": {
-    "startCommand": "/opt/venv/bin/python main.py",
+    "startCommand": "python main.py",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
